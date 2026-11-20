@@ -1,0 +1,28 @@
+{
+  "cli": {
+    "version": ">= 20.5.1",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "http://192.168.0.105:4000",
+        "EXPO_PUBLIC_ML_API_BASE_URL": "http://192.168.0.105:8000",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://xeoxjjhtssbeqsbhmmdl.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhlb3hqamh0c3NiZXFzYmhtbWRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1NDIwNTEsImV4cCI6MjA5ODExODA1MX0.jxXoWqiutkvi1UtQiDrApcEkzkAHPLGhoQDaMNlIgm8",
+        "EXPO_PUBLIC_AUTH_REDIRECT_URL": "flowtask://auth/callback"
+      }
+    },
+    "production": {
+      "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

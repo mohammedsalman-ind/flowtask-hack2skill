@@ -1,0 +1,239 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import * as Speech from 'expo-speech';
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
+import { AppButton, Card, Field, SectionHeader } from '../components/ui';
+import { useTasks } from '../context/TasksContext';
+import { useTheme } from '../context/ThemeContext';
+import { Task } from '../types';
+import { parseVoiceCommand } from '../services/jerryService';
+import { useSafeBottomPadding } from '../hooks/useSafeBottomPadding';
+
+function isToday(value: string | null | undefined) {
+  if (!value) return false;
+  const d = new Date(value);
+  const now = new Date();
+  return d.toDateString() === now.toDateString();
+}
+
+function isOverdue(task: Task) {
+  return Boolean(task.due_date && new Date(task.due_date) < new Date() && task.status !== 'done');
+}
+
+export default function JerryAssistantScreen() {
+  const { theme } = useTheme();
+  const { tasks, createTask, loadTasks } = useTasks();
+  const paddingBottom = useSafeBottomPadding(34);
+  const [listening, setListening] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [transcript, setTranscript] = useState('');
+  const [interim, setInterim] = useState('');
+  const [textCommand, setTextCommand] = useState('');
+  const [reply, setReply] = useState("Hi, I'm Jerry. Tell me what you need to get done.");
+  const [error, setError] = useState('');
+  const [speechLanguage, setSpeechLanguage] = useState<'en-IN' | 'hi-IN'>('en-IN');
+
+  useSpeechRecognitionEvent('start', () => setListening(true));
+  useSpeechRecognitionEvent('end', () => setListening(false));
+  useSpeechRecognitionEvent('result', (event: any) => {
+    const text = event.results?.[0]?.transcript?.trim() || '';
+    if (event.isFinal) {
+      setTranscript(text);
+      setInterim('');
+    } else {
+      setInterim(text);
+    }
+  });
+  useSpeechRecognitionEvent('error', (event: any) => {
+    if (event.error !== 'aborted') setError(event.message || `Voice recognition error: ${event.error}`);
+    setListening(false);
+  });
+
+  useEffect(() => () => { Speech.stop(); ExpoSpeechRecognitionModule.abort(); }, []);
+
+  const speak = useCallback((message: string) => {
+    setReply(message);
+    Speech.stop();
+    Speech.speak(message, { rate: 0.95, pitch: 1.0 });
+  }, []);
+
+  const startListening = async () => {
+    setError('');
+    try {
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission.granted) {
+        throw new Error('Microphone and speech recognition permission is required for Jerry.');
+      }
+      setTranscript('');
+      setInterim('');
+      ExpoSpeechRecognitionModule.start({ lang: speechLanguage, interimResults: true, continuous: false });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to start voice recognition.');
+    }
+  };
+
+  const stopListening = () => ExpoSpeechRecognitionModule.stop();
+
+  const todayCount = useMemo(() => tasks.filter((t) => isToday(t.due_date) && t.status !== 'done').length, [tasks]);
+  const pendingCount = useMemo(() => tasks.filter((t) => t.status !== 'done').length, [tasks]);
+  const overdueCount = useMemo(() => tasks.filter(isOverdue).length, [tasks]);
+
+  const runCommand = async (raw: string) => {
+    const command = raw.trim();
+    if (!command) return;
+    setWorking(true);
+    setError('');
+    try {
+      const lower = command.toLowerCase();
+      const latestTasks = await loadTasks('all');
+      const latestTodayCount = latestTasks.filter((task) => isToday(task.due_date) && task.status !== 'done').length;
+      const latestPendingCount = latestTasks.filter((task) => task.status !== 'done').length;
+      const latestOverdueCount = latestTasks.filter(isOverdue).length;
+
+      if (/\b(today|today's|schedule today|tasks today)\b/.test(lower)) {
+        speak(latestTodayCount ? `You have ${latestTodayCount} task${latestTodayCount === 1 ? '' : 's'} due today.` : 'You have no open tasks due today.');
+        return;
+      }
+      if (/\b(overdue|late|past due)\b/.test(lower)) {
+        speak(latestOverdueCount ? `You have ${latestOverdueCount} overdue task${latestOverdueCount === 1 ? '' : 's'}.` : 'You have no overdue tasks.');
+        return;
+      }
+      if (/\b(pending|open|left|unfinished)\b/.test(lower) && !/\badd|create|make|need to\b/.test(lower)) {
+        speak(latestPendingCount ? `You have ${latestPendingCount} open tasks.` : 'You are all caught up.');
+        return;
+      }
+
+      const parsed = await parseVoiceCommand(command);
+      const task = await createTask({
+        title: parsed.title,
+        description: `Created by Jerry from: ${command}`,
+        due_date: parsed.due_date,
+        priority: parsed.priority,
+        status: 'todo',
+        tags: [...parsed.tags, 'jerry'],
+        context: parsed.context,
+      });
+      const due = task.due_date ? `, due ${new Date(task.due_date).toLocaleDateString()}` : '';
+      speak(`Done. I added ${task.title}${due}.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Jerry could not complete that request.';
+      setError(message);
+      speak('I could not complete that request. Please try again.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const submit = () => {
+    const command = textCommand.trim() || transcript.trim();
+    if (!command) {
+      Alert.alert('Tell Jerry something', 'Try “Add a task to finish my report tomorrow.”');
+      return;
+    }
+    runCommand(command);
+  };
+
+  return (
+    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: theme.background }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom }]} keyboardShouldPersistTaps="handled">
+        <View style={styles.headerRow}>
+          <View style={styles.headerCopy}>
+            <Text style={[styles.eyebrow, { color: theme.primary }]}>YOUR FLOWTASK ASSISTANT</Text>
+            <Text style={[styles.title, { color: theme.text }]}>Jerry</Text>
+            <Text style={[styles.subtitle, { color: theme.muted }]}>Talk naturally. Jerry turns clear requests into action.</Text>
+          </View>
+          <View style={[styles.avatar, { backgroundColor: theme.primarySoft, borderColor: theme.primary }]}>
+            <Ionicons name="sparkles" size={28} color={theme.primary} />
+          </View>
+        </View>
+
+        <Card style={styles.conversationCard}>
+          <View style={styles.replyRow}>
+            <View style={[styles.jerryDot, { backgroundColor: theme.primary }]}><Text style={styles.jerryLetter}>J</Text></View>
+            <View style={styles.replyBubble}>
+              <Text style={[styles.replyText, { color: theme.text }]}>{reply}</Text>
+            </View>
+          </View>
+          {(transcript || interim) ? (
+            <View style={[styles.transcriptBox, { backgroundColor: theme.surfaceAlt }]}>
+              <Text style={[styles.transcriptLabel, { color: theme.muted }]}>YOU SAID</Text>
+              <Text style={[styles.transcript, { color: theme.text }]}>{transcript || interim}</Text>
+            </View>
+          ) : null}
+        </Card>
+
+        <View style={styles.languageRow}>
+          <Text style={[styles.languageLabel, { color: theme.muted }]}>Voice language</Text>
+          {([['en-IN', 'English'], ['hi-IN', 'Hindi / Hinglish']] as const).map(([value, label]) => (
+            <TouchableOpacity key={value} disabled={listening || working} onPress={() => setSpeechLanguage(value)} style={[styles.languageChip, { backgroundColor: speechLanguage === value ? theme.primarySoft : theme.surface, borderColor: speechLanguage === value ? theme.primary : theme.border }]}>
+              <Text style={[styles.languageChipText, { color: speechLanguage === value ? theme.primary : theme.text }]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <TouchableOpacity activeOpacity={0.88} onPress={listening ? stopListening : startListening} disabled={working} style={[styles.micButton, { backgroundColor: listening ? theme.danger : theme.primary, opacity: working ? 0.6 : 1 }]}>
+          <Ionicons name={listening ? 'stop' : 'mic'} size={32} color="#FFFFFF" />
+          <Text style={styles.micText}>{listening ? 'Listening… tap to stop' : 'Tap to talk to Jerry'}</Text>
+        </TouchableOpacity>
+
+        <SectionHeader title="Or type to Jerry" />
+        <Field value={textCommand} onChangeText={setTextCommand} placeholder="e.g. Add a task to call Rahul tomorrow" multiline style={styles.input} />
+        <AppButton label="Ask Jerry" icon="send-outline" onPress={submit} loading={working} disabled={working} />
+
+        {error ? <Text style={[styles.error, { color: theme.danger }]}>{error}</Text> : null}
+
+        <SectionHeader title="Try saying" />
+        <View style={styles.chips}>
+          {[
+            'Add a task to finish my report tomorrow',
+            'What do I have today?',
+            'What is overdue?',
+            'What tasks are still pending?',
+          ].map((example) => (
+            <TouchableOpacity key={example} onPress={() => { setTextCommand(example); runCommand(example); }} style={[styles.chip, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+              <Text style={[styles.chipText, { color: theme.text }]}>{example}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <Card style={styles.noteCard}>
+          <Ionicons name="shield-checkmark-outline" size={20} color={theme.success} />
+          <Text style={[styles.noteText, { color: theme.muted }]}>Jerry only turns a request into a task when it can extract a concrete action. Your task stays in FlowTask so you can edit or complete it normally.</Text>
+        </Card>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  content: { padding: 20, paddingTop: 28 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
+  headerCopy: { flex: 1, paddingRight: 12 },
+  eyebrow: { fontSize: 11, fontWeight: '900', letterSpacing: 1.1, marginBottom: 5 },
+  title: { fontSize: 32, fontWeight: '900' },
+  subtitle: { fontSize: 14, lineHeight: 20, marginTop: 5 },
+  avatar: { width: 64, height: 64, borderRadius: 20, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  conversationCard: { padding: 16, marginBottom: 16 },
+  replyRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  jerryDot: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  jerryLetter: { color: '#FFFFFF', fontSize: 17, fontWeight: '900' },
+  replyBubble: { flex: 1, marginLeft: 10 },
+  replyText: { fontSize: 16, lineHeight: 23, fontWeight: '700' },
+  transcriptBox: { borderRadius: 12, padding: 12, marginTop: 14 },
+  transcriptLabel: { fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  transcript: { fontSize: 14, lineHeight: 20, marginTop: 4 },
+  languageRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7, marginBottom: 12 },
+  languageLabel: { width: '100%', fontSize: 12, fontWeight: '800', marginBottom: 2 },
+  languageChip: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 7 },
+  languageChipText: { fontSize: 11, fontWeight: '900' },
+  micButton: { height: 124, borderRadius: 28, alignItems: 'center', justifyContent: 'center', marginBottom: 18 },
+  micText: { color: '#FFFFFF', fontSize: 15, fontWeight: '900', marginTop: 8 },
+  input: { minHeight: 86, marginBottom: 8 },
+  error: { fontSize: 13, fontWeight: '700', marginTop: 10 },
+  chips: { gap: 9 },
+  chip: { borderWidth: 1, borderRadius: 14, padding: 13 },
+  chipText: { fontSize: 13, lineHeight: 18, fontWeight: '700' },
+  noteCard: { flexDirection: 'row', gap: 10, marginTop: 18, padding: 14 },
+  noteText: { flex: 1, fontSize: 12, lineHeight: 18, fontWeight: '600' },
+});

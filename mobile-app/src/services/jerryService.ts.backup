@@ -1,0 +1,23 @@
+import { api } from './api';
+import { TaskContext, TaskPriority } from '../types';
+
+type ParsedTask = {
+  title: string;
+  due_date: string | null;
+  priority: TaskPriority;
+  tags: string[];
+  context: TaskContext;
+};
+
+export async function parseVoiceCommand(text: string): Promise<ParsedTask> {
+  if (!text.trim()) throw new Error('Tell Jerry what you need to do.');
+  try {
+    const { data } = await api.post<ParsedTask>('/api/ai/parse', { text: text.trim() }, { timeout: 30000 });
+    if (!data?.title) throw new Error('Jerry returned an incomplete task. Please try a clearer request.');
+    return data;
+  } catch (error: any) {
+    const detail = error?.response?.data?.detail;
+    if (typeof detail === 'string') throw new Error(detail);
+    throw new Error(error?.message || 'Jerry could not understand that request.');
+  }
+}
